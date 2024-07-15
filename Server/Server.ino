@@ -1,55 +1,105 @@
 #include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiServer.h>
 
-#define LED1_PIN 12
-#define LED2_PIN 13
+const char* ssid = "ESP32-AP";
+const char* password = "123456789";
+const int maxClients = 20;
+const uint16_t port = 5784;
+const char* template_code = "123456789\n";
 
-NetworkServer server(5764);
-SemaphoreHandle_t shared_var_mutex = NULL;
+// Настройка статического IP-адреса
+IPAddress local_IP(192, 168, 4, 1);
+IPAddress gateway(192, 168, 4, 1);
+IPAddress subnet(255, 255, 255, 0);
 
-void TaskServerHandler(void *pvParameters);
-void TaskQRCodeReader1(void *pvParameters);
+WiFiServer server(port);
+std::vector<WiFiClient> clients;
 
-std::vector<NetworkClient> clients;
- 
 void setup() {
-  // put your setup code here, to run once:
-
   Serial.begin(115200);
-  delay(10);
-  
-  pinMode(LED1_PIN, OUTPUT);
-  pinMode(LED2_PIN, OUTPUT);
 
+  // Настройка точки доступа
+  WiFi.softAP(ssid, password);
+  // Установка статического IP-адреса
+  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+    Serial.println("Ошибка при установке статического IP-адреса");
+  }
+
+  Serial.print("IP адрес точки доступа: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Запуск сервера
   server.begin();
-
-  shared_var_mutex = xSemaphoreCreateMutex();
-  xTaskCreate(TaskServerHandler, "Server handler", 2048, NULL, 1, NULL);
-  xTaskCreate(TaskQRCodeReader1, "QRCode reader", 2048, NULL, 1, NULL);  
+  Serial.println("TCP сервер запущен и слушает порт 5784");
 }
 
 void loop() {
-  // put your main code here, to run repeatedly: 
+  // Проверка новых подключений
+  if (server.hasClient()) {
+    handleNewClient();
+  }
+
+  // Обработка существующих клиентов
+  handleExistsClients();
 }
 
-void TaskServerHandler(void *pvParameters) {
-  while(1) {
-    NetworkClient client = server.accept();  // listen for incoming clients
+void handleNewClient() {
+  if (clients.size() < maxClients) {
+    WiFiClient client = server.available();
     if (client) {
-      int m = 0;
-      do {
-        m = xSemaphoreTake(shared_var_mutex, portMAX_DELAY);
-        if (m == pdTRUE) {
-          clients.push_back(client);
-          xSemaphoreGive(shared_var_mutex);
-        }
-      }
-      while( m == pdFALSE );      
+      clients.push_back(client);
+      client.print(template_code);
+      Serial.println("Новый клиент подключен");
     }
-    delay(10);
+  } else {
+    WiFiClient client = server.available();
+    if (client) {
+      client.stop();
+      Serial.println("Клиент отклонен: превышено максимальное количество подключений");
+    }
   }
 }
 
-void TaskQRCodeReader1(void *pvParameters) {
-  
+void handleExistsClients() {
+  for (auto it = clients.begin(); it != clients.end();) {
+    if (!(*it).connected()) {
+      it = clients.erase(it);
+      Serial.println("Клиент отключен");      
+    } else {
+      // Чтение данных от клиента
+      if ((*it).available()) {
+        String clientData = (*it).readStringUntil('\n');
+        if (clientData == "get_template") {
+          sendTemplate((*it));
+        } else if (clientData == "get_status") {
+          printClientsStatus((*it));
+        }
+      }
+      ++it;
+    }
+  }
 }
 
+void sendTemplate(WiFiClient client) {
+  if (client.connected()) {
+    client.print(template_code);
+  }
+}
+
+void printClientsStatus(WiFiClient client) {
+  if (clients.empty()) {
+    client.println("Нет подключенных клиентов");
+  } else {
+    client.println("Статус клиентов:");
+    for (size_t i = 0; i < clients.size(); i++) {
+      client.print("Клиент ");
+      client.print(i + 1);
+      client.print(": ");
+      client.print(clients[i].remoteIP());
+      client.print(" - ");
+      client.println(clients[i].connected() ? "подключен" : "отключен");
+    }
+  }
+  client.println();
+}
