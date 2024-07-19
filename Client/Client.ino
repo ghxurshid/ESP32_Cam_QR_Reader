@@ -1,4 +1,4 @@
-o`//>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 01 ESP32 Cam QR Code Scanner
+//>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 01 ESP32 Cam QR Code Scanner
 /*
    Reference :
    - ESP32-CAM QR Code Reader (off-line) : https://www.youtube.com/watch?v=ULZL37YqJc8
@@ -7,27 +7,28 @@ o`//>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
    The source of the "quirc" library I shared on this project: https://github.com/fustyles/Arduino/tree/master/ESP32-CAM_QRCode_Recognition/ESP32QRCodeReader_Page
 */
 
-/* ======================================== Including the libraries. */
+/* Including the libraries. */
+#include <WiFi.h>
+#include <WiFiClient.h>
+
 #include "esp_camera.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "quirc.h"
-/* ======================================== */
 
-// creating a task handle
+/* creating a task handle */
 TaskHandle_t QRCodeReader_Task;
 
-/* ======================================== Select camera model */
+/* Select camera model */
 //#define CAMERA_MODEL_WROVER_KIT
 //#define CAMERA_MODEL_ESP_EYE
 //#define CAMERA_MODEL_M5STACK_PSRAM
 //#define CAMERA_MODEL_M5STACK_WITHOUT_PSRAM
 //#define CAMERA_MODEL_M5STACK_WITHOUT_PSRAM
 #define CAMERA_MODEL_AI_THINKER
-/* ======================================== */
 
-/* ======================================== GPIO of camera models */
 
+/* GPIO of camera models */
 #if defined(CAMERA_MODEL_AI_THINKER)
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -50,6 +51,9 @@ TaskHandle_t QRCodeReader_Task;
 #error "Camera model not selected"
 #endif
 
+#define LED1_PIN 13
+#define LED2_PIN 12
+
 struct QRCodeData
 {
   bool valid;
@@ -58,6 +62,7 @@ struct QRCodeData
   int payloadLen;
 };
 
+int zx;
 struct quirc *q = NULL;
 uint8_t *image = NULL;
 camera_fb_t * fb = NULL;
@@ -65,10 +70,30 @@ struct quirc_code code;
 struct quirc_data data;
 quirc_decode_error_t err;
 struct QRCodeData qrCodeData;
-String QRCodeResult = "";
-int zx;
 
-void setup() { 
+String QRCodeResult = "";
+String QRCodeTemplate = "";
+
+const char *ssid = "PLUM TECHNOLOGIES";          // Change this to your WiFi SSID
+const char *password = "455855454";  // Change this to your WiFi password
+
+const char *host = "192.168.4.1";        // This should not be changed
+const int httpPort = 5784;                        // This should not be changed
+
+static WiFiClient reader_client;
+
+void ErrorHandle(char* msg)
+{
+  Serial.println(msg);
+  while (1) {
+    digitalWrite(LED2_PIN, HIGH);
+    delay(200);
+    digitalWrite(LED2_PIN, LOW);
+    delay(200);
+  }
+}
+
+void setup() {
   // Disable brownout detector.
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
@@ -76,6 +101,49 @@ void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
+
+  pinMode(LED1_PIN, OUTPUT);
+  pinMode(LED2_PIN, OUTPUT);
+
+  // We start by connecting to a WiFi network
+
+  Serial.println();
+  Serial.println("******************************************************");
+  Serial.println("Connecting to WiFi");
+
+  WiFi.begin(ssid, password);
+
+  int attempCount = 20;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    if (attempCount -- < 0) ErrorHandle("FATAL: Can't connect to wifi:(");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Connect client to the host
+  if (!reader_client.connect(host, httpPort)) {
+    ErrorHandle("FATAL: Can't connect to the host:(");
+  } else {
+    unsigned long timeout = millis();
+    while (reader_client.available() == 0) {
+      if (millis() - timeout > 5000) {
+        Serial.println(">>> Client Timeout !");
+        break;
+      }
+    }
+
+    // Read all the lines of the reply from server and print them to Serial
+    if (reader_client.available()) {
+      QRCodeTemplate = reader_client.readStringUntil('\r');
+    } else {
+      ErrorHandle("FATAL: Can't get template data from host:(");
+    }
+  }
 
   /* Camera configuration. */
   Serial.println("Start configuring and initializing the camera...");
@@ -129,7 +197,7 @@ void setup() {
     NULL,                  /* parameter of the task */
     1,                     /* priority of the task */
     &QRCodeReader_Task,    /* Task handle to keep track of created task */
-    0);                    /* pin task to core 0 */  
+    0);                    /* pin task to core 0 */
 
   pinMode (4, OUTPUT);
 }
@@ -178,6 +246,10 @@ void QRCodeReader( void * pvParameters ) {
       } else {
         Serial.printf("Decoding successful:\n");
         dumpData(&data);
+
+        if (QRCodeResult == QRCodeTemplate) {
+          reader_client.println(QRCodeResult);
+        }
       }
       Serial.println();
     }
@@ -201,4 +273,5 @@ void dumpData(const struct quirc_data *data)
   Serial.print(zx);
   QRCodeResult = (const char *)data->payload;
 }
+
 
